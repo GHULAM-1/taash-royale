@@ -4,13 +4,16 @@
   "description": "",
   "main": "index.js",
   "scripts": {
-"dev": "nodemon",
-  "start": "tsc && node dist/index.js"  },
+    "dev": "nodemon",
+    "start": "tsc && node dist/index.js"
+  },
   "keywords": [],
   "author": "",
   "license": "ISC",
   "dependencies": {
-    "express": "^5.1.0"
+    "dotenv": "^17.0.0",
+    "express": "^5.1.0",
+    "stream-chat": "^8.60.0"
   },
   "devDependencies": {
     "@types/express": "^5.0.3",

@@ -26,7 +26,7 @@ server/build/
 # Environment files
 .env
 .env.*
-
+env.ts
 # IDE/Editor folders
 .vscode/
 .idea/
