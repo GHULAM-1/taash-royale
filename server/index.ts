@@ -1,19 +1,26 @@
 import express from 'express';
-import chatRoutes from './routes/chatRoutes';
 import dotenv from 'dotenv';
+import userRoutes from './routes/userRoutes';
+import { connectDB } from './utils/db';
+import roomRoutes from './routes/roomRoutes';
+import tokenRoutes from './routes/tokenRoutes';
 
 dotenv.config();
 const app = express();
-const PORT = process.env.PORT || 3000;
+const PORT = process.env.PORT || 5000;
 
 app.use(express.json());
-app.use('/api/chat', chatRoutes);
+app.use(userRoutes);
+app.use(roomRoutes);
+app.use(tokenRoutes);
 
 app.get('/', (_req, res) => {
   res.send('Hello, Express with TypeScript!');
 });
 
-app.listen(PORT, () => {
-  console.log(`Server running at http://localhost:${PORT}`);
+connectDB().then(() => {
+  app.listen(PORT, () => {
+    console.log(`Server running on port ${PORT}`);
+  });
 });
 //

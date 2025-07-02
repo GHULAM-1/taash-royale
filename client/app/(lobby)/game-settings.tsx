@@ -1,103 +1,530 @@
 import React, { useState } from "react";
-import { View, Text, TouchableOpacity, ScrollView, Dimensions } from "react-native";
+import { View, Text, TouchableOpacity, ScrollView, Dimensions, StyleSheet, Alert, ActivityIndicator, Modal } from "react-native";
 import { useRouter } from "expo-router";
+import { ENV } from "@/env";
+import { useUserStore } from "../../store/userStore";
+
+interface User {
+  id: string;
+  username: string;
+}
+
+interface InviteModalProps {
+  visible: boolean;
+  onInvite: (user: User) => void;
+  onClose: () => void;
+  inviting: boolean;
+  invited: User[];
+  maxInvites: number;
+  users: User[];
+}
+
+function InviteModal({ visible, onInvite, onClose, inviting, invited, maxInvites, users }: InviteModalProps) {
+  return (
+    <Modal visible={visible} transparent animationType="fade">
+      <View style={styles.inviteModalOverlay}>
+        <View style={styles.inviteModalContent}>
+          <Text style={styles.inviteModalTitle}>Invite Players</Text>
+          <Text style={styles.inviteModalSubtitle}>Select {maxInvites} users to invite:</Text>
+          <View style={styles.inviteUsersList}>
+            {users.map((user) => (
+              <TouchableOpacity
+                key={user.id}
+                style={[styles.inviteUserButton, invited.some((u: any) => u.id === user.id) && styles.inviteUserButtonInvited]}
+                onPress={() => onInvite(user)}
+                disabled={invited.some((u: any) => u.id === user.id) || invited.length >= maxInvites || inviting}
+              >
+                <Text style={styles.inviteUserText}>{user.username}</Text>
+                {invited.some((u: any) => u.id === user.id) && <Text style={{ color: '#4ADE80', marginLeft: 8 }}>Invited</Text>}
+              </TouchableOpacity>
+            ))}
+          </View>
+          <TouchableOpacity style={styles.inviteModalClose} onPress={onClose} disabled={inviting}>
+            <Text style={styles.inviteModalCloseText}>Cancel</Text>
+          </TouchableOpacity>
+        </View>
+      </View>
+    </Modal>
+  );
+}
 
 export default function GameSettings() {
   const router = useRouter();
+  const user = useUserStore((state) => state.user);
   const [players, setPlayers] = useState(3);
   const [tableType, setTableType] = useState<'public' | 'private'>('private');
-  const minPlayers = 3;
+  const [loading, setLoading] = useState(false);
+  const [roomCode, setRoomCode] = useState<string | null>(null);
+  const [showInviteModal, setShowInviteModal] = useState(false);
+  const [invited, setInvited] = useState<User[]>([]);
+  const [waiting, setWaiting] = useState(false);
+  const [roomStatus, setRoomStatus] = useState('waiting_for_invites');
+  const [mockUsers, setMockUsers] = useState<User[]>([]);
+  const minPlayers = 2;
   const maxPlayers = 6;
+  const maxInvites = 2;
   
   const { width: screenWidth, height: screenHeight } = Dimensions.get('window');
   const isSmallScreen = screenWidth < 400;
   const isMediumScreen = screenWidth >= 400 && screenWidth < 600;
 
-  const handleContinue = () => {
+  // Fetch mock users from backend after room creation
+  React.useEffect(() => {
+    if (!showInviteModal || !user) return;
+    async function fetchMockUsers() {
+      try {
+        console.log("Fetching mock users", user!.id);
+        const res = await fetch(`${ENV.BASE_URL}/api/mock-users?limit=4&exclude=${user!.id}`);
+        if (!res.ok) throw new Error("Failed to fetch users");
+        const data = await res.json();
+        console.log("Mock users", data);
+        setMockUsers(data || []);
+      } catch (err) {
+        console.error('Error fetching mock users:', err instanceof Error ? err.message : 'Unknown error');
+        setMockUsers([]);
+      }
+    }
+    fetchMockUsers();
+  }, [showInviteModal, user]);
+
+  const handleContinue = async () => {
+    if (!user) {
+      Alert.alert("User not registered");
+      return;
+    }
     if (tableType === 'private') {
-      router.push('/(lobby)/private-table');
+      setLoading(true);
+      try {
+        const res = await fetch(`${ENV.BASE_URL}/api/rooms`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ creator: user.id, maxPlayers: players }),
+        });
+        if (!res.ok) throw new Error("Failed to create room");
+        const data = await res.json();
+        setRoomCode(data.code);
+        setShowInviteModal(true);
+      } catch (err: any) {
+        Alert.alert("Room Creation Error", err.message);
+      } finally {
+        setLoading(false);
+      }
     } else {
       // handle public table navigation
     }
   };
 
+  // Invite logic
+  const handleInvite = async (invitee: User) => {
+    if (!roomCode) return;
+    setLoading(true);
+    try {
+      const res = await fetch(`${ENV.BASE_URL}/api/rooms/invite`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ code: roomCode, invitees: [invitee] }),
+      });
+      if (!res.ok) throw new Error("Failed to invite user");
+      setInvited((prev) => [...prev, invitee]);
+    } catch (err) {
+      Alert.alert("Invite Error", err instanceof Error ? err.message : "Unknown error");
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  // Poll for room status if waiting
+  React.useEffect(() => {
+    if (!roomCode || !waiting) return;
+    let interval: any;
+    async function pollRoom() {
+      try {
+        const res = await fetch(`${ENV.BASE_URL}/api/rooms/${roomCode}`);
+        if (!res.ok) return;
+        const data = await res.json();
+        setRoomStatus(data.room.status);
+        if (data.room.status === 'ready') {
+          setWaiting(false);
+          router.push({ pathname: '/(lobby)/private-table', params: { roomCode } });
+        }
+      } catch {}
+    }
+    pollRoom();
+    interval = setInterval(pollRoom, 2000);
+    return () => clearInterval(interval);
+  }, [roomCode, waiting]);
+
+  // After inviting 2 users, start waiting
+  React.useEffect(() => {
+    if (invited.length === maxInvites && roomCode) {
+      setShowInviteModal(false);
+      setWaiting(true);
+    }
+  }, [invited, maxInvites, roomCode]);
+
   return (
-    <View className="flex-1 bg-[#181A20] justify-center items-center">
+    <View style={styles.container}>
       <ScrollView 
-        className="flex-1 w-full" 
-        contentContainerStyle={{ 
-          flexGrow: 1, 
-          justifyContent: 'center', 
-          alignItems: 'center',
-          paddingVertical: 20
-        }}
+        style={styles.scrollView} 
+        contentContainerStyle={styles.scrollContent}
         showsVerticalScrollIndicator={false}
       >
-        <View className={`${isSmallScreen ? 'w-[92%]' : isMediumScreen ? 'w-[85%]' : 'w-[80%]'} max-w-md bg-[#23242a] bg-opacity-95 rounded-2xl shadow-2xl ${isSmallScreen ? 'p-4' : 'p-6'} items-center`}>
-          <Text className={`${isSmallScreen ? 'text-2xl' : 'text-3xl'} font-extrabold text-white text-center drop-shadow-lg mb-4`} 
-                 style={{textShadowColor:'#000',textShadowOffset:{width:2,height:2},textShadowRadius:4}}>
+        <View style={[
+          styles.settingsContainer,
+          isSmallScreen ? styles.settingsContainerSmall : 
+          isMediumScreen ? styles.settingsContainerMedium : 
+          styles.settingsContainerLarge,
+          isSmallScreen ? styles.paddingSmall : styles.paddingLarge
+        ]}>
+          <Text style={[
+            styles.title,
+            isSmallScreen ? styles.titleSmall : styles.titleLarge
+          ]}>
             Game Settings
           </Text>
           
           {/* Players */}
-          <View className="w-full mb-4">
-            <Text className={`${isSmallScreen ? 'text-base' : 'text-lg'} font-bold text-white mb-2`}>Players</Text>
-            <Text className="text-xs text-gray-300 mb-2">Max Players: {maxPlayers}</Text>
-            <View className="flex-row items-center bg-[#181A20] rounded-xl px-3 py-2">
-              <Text className={`flex-1 ${isSmallScreen ? 'text-xl' : 'text-2xl'} text-white font-bold text-center`}>{players}</Text>
+          <View style={styles.section}>
+            <Text style={[styles.sectionTitle, isSmallScreen ? styles.sectionTitleSmall : styles.sectionTitleLarge]}>Players</Text>
+            <Text style={styles.maxPlayersText}>Max Players: {maxPlayers}</Text>
+            <View style={styles.playersContainer}>
+              <Text style={[styles.playersCount, isSmallScreen ? styles.playersCountSmall : styles.playersCountLarge]}>{players}</Text>
               <TouchableOpacity
-                className="bg-yellow-400 rounded-xl px-3 py-2 mx-1"
+                style={styles.playerButton}
                 onPress={() => setPlayers(Math.max(players - 1, minPlayers))}
               >
-                <Text className="text-black text-xl font-bold">-</Text>
+                <Text style={styles.playerButtonText}>-</Text>
               </TouchableOpacity>
               <TouchableOpacity
-                className="bg-yellow-400 rounded-xl px-3 py-2 mx-1"
+                style={styles.playerButton}
                 onPress={() => setPlayers(Math.min(players + 1, maxPlayers))}
               >
-                <Text className="text-black text-xl font-bold">+</Text>
+                <Text style={styles.playerButtonText}>+</Text>
               </TouchableOpacity>
             </View>
           </View>
           
           {/* Game Type */}
-          <View className="w-full mb-6">
-            <Text className={`${isSmallScreen ? 'text-base' : 'text-lg'} font-bold text-white mb-2`}>Game Type</Text>
-            <View className={`flex-row w-full ${isSmallScreen ? 'space-x-2' : 'space-x-4'}`}>
+          <View style={styles.section}>
+            <Text style={[styles.sectionTitle, isSmallScreen ? styles.sectionTitleSmall : styles.sectionTitleLarge]}>Game Type</Text>
+            <View style={[styles.gameTypeContainer, isSmallScreen ? styles.gameTypeContainerSmall : styles.gameTypeContainerLarge]}>
               <TouchableOpacity
-                className={`flex-1 rounded-xl px-2 py-4 items-center border-2 ${tableType === 'public' ? 'border-yellow-400 bg-green-700/80' : 'border-transparent bg-green-700/40'}`}
+                style={[
+                  styles.gameTypeButton,
+                  tableType === 'public' ? styles.gameTypeButtonActive : styles.gameTypeButtonInactive,
+                  styles.publicButton
+                ]}
                 onPress={() => setTableType('public')}
               >
-                <Text className={`${isSmallScreen ? 'text-lg' : 'text-xl'} font-extrabold text-white mb-1`}>Public Table</Text>
-                <Text className="text-xs text-white text-center">Play with random players from around the world.</Text>
+                <Text style={[styles.gameTypeTitle, isSmallScreen ? styles.gameTypeTitleSmall : styles.gameTypeTitleLarge]}>Public Table</Text>
+                <Text style={styles.gameTypeDescription}>Play with random players from around the world.</Text>
               </TouchableOpacity>
               <TouchableOpacity
-                className={`flex-1 rounded-xl px-2 py-4 items-center border-2 ${tableType === 'private' ? 'border-yellow-400 bg-red-900/80' : 'border-transparent bg-red-900/40'}`}
+                style={[
+                  styles.gameTypeButton,
+                  tableType === 'private' ? styles.gameTypeButtonActive : styles.gameTypeButtonInactive,
+                  styles.privateButton
+                ]}
                 onPress={() => setTableType('private')}
               >
-                <Text className={`${isSmallScreen ? 'text-lg' : 'text-xl'} font-extrabold text-white mb-1`}>Private Table</Text>
-                <Text className="text-xs text-white text-center">Share the table code to invite your friends.</Text>
+                <Text style={[styles.gameTypeTitle, isSmallScreen ? styles.gameTypeTitleSmall : styles.gameTypeTitleLarge]}>Private Table</Text>
+                <Text style={styles.gameTypeDescription}>Share the table code to invite your friends.</Text>
               </TouchableOpacity>
             </View>
           </View>
           
           {/* Buttons */}
-          <View className="flex-row w-full justify-between">
+          <View style={styles.buttonContainer}>
             <TouchableOpacity 
-              className={`bg-yellow-400 rounded-xl ${isSmallScreen ? 'px-6 py-2' : 'px-8 py-3'} shadow-lg`} 
+              style={[styles.button, isSmallScreen ? styles.buttonSmall : styles.buttonLarge]} 
               onPress={() => router.back()}
             >
-              <Text className={`text-[#222] font-bold ${isSmallScreen ? 'text-base' : 'text-lg'}`}>Back</Text>
+              <Text style={[styles.buttonText, isSmallScreen ? styles.buttonTextSmall : styles.buttonTextLarge]}>Back</Text>
             </TouchableOpacity>
             <TouchableOpacity 
-              className={`bg-yellow-400 rounded-xl ${isSmallScreen ? 'px-6 py-2' : 'px-8 py-3'} shadow-lg`} 
+              style={[styles.button, isSmallScreen ? styles.buttonSmall : styles.buttonLarge]} 
               onPress={handleContinue}
+              disabled={loading}
             >
-              <Text className={`text-[#222] font-bold ${isSmallScreen ? 'text-base' : 'text-lg'}`}>Continue</Text>
+              {loading ? (
+                <ActivityIndicator color="#222" />
+              ) : (
+                <Text style={[styles.buttonText, isSmallScreen ? styles.buttonTextSmall : styles.buttonTextLarge]}>Continue</Text>
+              )}
             </TouchableOpacity>
           </View>
         </View>
       </ScrollView>
+      {/* Invite Modal */}
+      <InviteModal
+        visible={showInviteModal}
+        onInvite={handleInvite}
+        onClose={() => setShowInviteModal(false)}
+        inviting={loading}
+        invited={invited}
+        maxInvites={maxInvites}
+        users={mockUsers}
+      />
+      {/* Waiting Modal */}
+      <Modal visible={waiting} transparent animationType="fade">
+        <View style={styles.inviteModalOverlay}>
+          <View style={styles.inviteModalContent}>
+            <Text style={styles.inviteModalTitle}>Waiting for players to accept...</Text>
+            <ActivityIndicator color="#FBBF24" style={{ marginTop: 16 }} />
+            <Text style={{ color: '#fff', marginTop: 16 }}>Room code: {roomCode}</Text>
+          </View>
+        </View>
+      </Modal>
     </View>
   );
-} 
+}
+
+const styles = StyleSheet.create({
+  container: {
+    flex: 1,
+    backgroundColor: "#181A20",
+    justifyContent: "center",
+    alignItems: "center",
+  },
+  scrollView: {
+    flex: 1,
+    width: "100%",
+  },
+  scrollContent: {
+    flexGrow: 1,
+    justifyContent: "center",
+    alignItems: "center",
+    paddingVertical: 20,
+  },
+  settingsContainer: {
+    maxWidth: 448, // max-w-md
+    backgroundColor: "rgba(35, 36, 42, 0.95)", // bg-[#23242a] bg-opacity-95
+    borderRadius: 16, // rounded-2xl
+    shadowColor: "#000",
+    shadowOffset: {
+      width: 0,
+      height: 25,
+    },
+    shadowOpacity: 0.25,
+    shadowRadius: 50,
+    elevation: 10,
+    alignItems: "center",
+  },
+  settingsContainerSmall: {
+    width: "92%",
+  },
+  settingsContainerMedium: {
+    width: "85%",
+  },
+  settingsContainerLarge: {
+    width: "80%",
+  },
+  paddingSmall: {
+    padding: 16, // p-4
+  },
+  paddingLarge: {
+    padding: 24, // p-6
+  },
+  title: {
+    fontWeight: "800", // font-extrabold
+    color: "#FFFFFF",
+    textAlign: "center",
+    marginBottom: 16, // mb-4
+    textShadowColor:'#000',
+    textShadowOffset:{width:2,height:2},
+    textShadowRadius:4,
+  },
+  titleSmall: {
+    fontSize: 24, // text-2xl
+  },
+  titleLarge: {
+    fontSize: 30, // text-3xl
+  },
+  section: {
+    width: "100%",
+    marginBottom: 16, // mb-4
+  },
+  sectionTitle: {
+    fontWeight: "700", // font-bold
+    color: "#FFFFFF",
+    marginBottom: 8, // mb-2
+  },
+  sectionTitleSmall: {
+    fontSize: 16, // text-base
+  },
+  sectionTitleLarge: {
+    fontSize: 18, // text-lg
+  },
+  maxPlayersText: {
+    fontSize: 12, // text-xs
+    color: "#D1D5DB", // text-gray-300
+    marginBottom: 8, // mb-2
+  },
+  playersContainer: {
+    flexDirection: "row",
+    alignItems: "center",
+    backgroundColor: "#181A20",
+    borderRadius: 12, // rounded-xl
+    paddingHorizontal: 12, // px-3
+    paddingVertical: 8, // py-2
+  },
+  playersCount: {
+    flex: 1,
+    color: "#FFFFFF",
+    fontWeight: "700", // font-bold
+    textAlign: "center",
+  },
+  playersCountSmall: {
+    fontSize: 20, // text-xl
+  },
+  playersCountLarge: {
+    fontSize: 24, // text-2xl
+  },
+  playerButton: {
+    backgroundColor: "#FBBF24", // bg-yellow-400
+    borderRadius: 12, // rounded-xl
+    paddingHorizontal: 12, // px-3
+    paddingVertical: 8, // py-2
+    marginHorizontal: 4, // mx-1
+  },
+  playerButtonText: {
+    color: "#000",
+    fontSize: 20, // text-xl
+    fontWeight: "700", // font-bold
+  },
+  gameTypeContainer: {
+    flexDirection: "row",
+    width: "100%",
+  },
+  gameTypeContainerSmall: {
+    // gap: 8, // space-x-2 - not supported in React Native
+  },
+  gameTypeContainerLarge: {
+    // gap: 16, // space-x-4 - not supported in React Native
+  },
+  gameTypeButton: {
+    flex: 1,
+    borderRadius: 12, // rounded-xl
+    paddingHorizontal: 8, // px-2
+    paddingVertical: 16, // py-4
+    alignItems: "center",
+    borderWidth: 2,
+    marginHorizontal: 4, // Add spacing between buttons
+  },
+  gameTypeButtonActive: {
+    borderColor: "#FBBF24", // border-yellow-400
+  },
+  gameTypeButtonInactive: {
+    borderColor: "transparent",
+  },
+  publicButton: {
+    backgroundColor: "rgba(21, 128, 61, 0.8)", // bg-green-700/80
+  },
+  privateButton: {
+    backgroundColor: "rgba(127, 29, 29, 0.8)", // bg-red-900/80
+  },
+  gameTypeTitle: {
+    fontWeight: "800", // font-extrabold
+    color: "#FFFFFF",
+    marginBottom: 4, // mb-1
+  },
+  gameTypeTitleSmall: {
+    fontSize: 18, // text-lg
+  },
+  gameTypeTitleLarge: {
+    fontSize: 20, // text-xl
+  },
+  gameTypeDescription: {
+    fontSize: 12, // text-xs
+    color: "#FFFFFF",
+    textAlign: "center",
+  },
+  buttonContainer: {
+    flexDirection: "row",
+    width: "100%",
+    justifyContent: "space-between",
+  },
+  button: {
+    backgroundColor: "#FBBF24", // bg-yellow-400
+    borderRadius: 12, // rounded-xl
+    shadowColor: "#000",
+    shadowOffset: {
+      width: 0,
+      height: 4,
+    },
+    shadowOpacity: 0.25,
+    shadowRadius: 8,
+    elevation: 5,
+  },
+  buttonSmall: {
+    paddingHorizontal: 24, // px-6
+    paddingVertical: 8, // py-2
+  },
+  buttonLarge: {
+    paddingHorizontal: 32, // px-8
+    paddingVertical: 12, // py-3
+  },
+  buttonText: {
+    color: "#222",
+    fontWeight: "700", // font-bold
+  },
+  buttonTextSmall: {
+    fontSize: 16, // text-base
+  },
+  buttonTextLarge: {
+    fontSize: 18, // text-lg
+  },
+  inviteModalOverlay: {
+    flex: 1,
+    justifyContent: "center",
+    alignItems: "center",
+    backgroundColor: "rgba(0, 0, 0, 0.5)",
+  },
+  inviteModalContent: {
+    backgroundColor: "#181A20",
+    padding: 20,
+    borderRadius: 16,
+    maxWidth: "80%",
+    width: "100%",
+    alignItems: "center",
+  },
+  inviteModalTitle: {
+    fontWeight: "800",
+    color: "#FFFFFF",
+    fontSize: 20,
+    marginBottom: 16,
+  },
+  inviteModalSubtitle: {
+    fontSize: 12,
+    color: "#FFFFFF",
+    marginBottom: 16,
+  },
+  inviteUsersList: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    justifyContent: "center",
+    marginBottom: 16,
+  },
+  inviteUserButton: {
+    backgroundColor: "rgba(255, 255, 255, 0.1)",
+    borderRadius: 12,
+    padding: 8,
+    margin: 4,
+  },
+  inviteUserButtonInvited: {
+    backgroundColor: "rgba(255, 255, 255, 0.2)",
+  },
+  inviteUserText: {
+    color: "#FFFFFF",
+    fontWeight: "700",
+  },
+  inviteModalClose: {
+    backgroundColor: "rgba(255, 255, 255, 0.1)",
+    borderRadius: 12,
+    padding: 8,
+  },
+  inviteModalCloseText: {
+    color: "#FFFFFF",
+    fontWeight: "700",
+  },
+}); 

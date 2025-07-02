@@ -29,7 +29,6 @@
     "expo-symbols": "~0.4.5",
     "expo-system-ui": "~5.0.9",
     "expo-web-browser": "~14.2.0",
-    "nativewind": "^4.1.23",
     "react": "19.0.0",
     "react-dom": "19.0.0",
     "react-native": "0.79.4",
@@ -40,7 +39,8 @@
     "react-native-web": "~0.20.0",
     "react-native-webview": "13.13.5",
     "stream-chat": "^9.10.0",
-    "stream-chat-react-native": "^8.0.0"
+    "stream-chat-react-native": "^8.0.0",
+    "zustand": "^5.0.6"
   },
   "devDependencies": {
     "@babel/core": "^7.24.6",
