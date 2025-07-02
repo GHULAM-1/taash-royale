@@ -10,7 +10,22 @@ export const createUser = async (req: any, res: any) => {
   console.log("Creating user", id, username);
   let user = await User.findOne({ id });
   if (!user) {
-    user = await User.create({ id, username });
+    // Fetch all existing users
+    const existingUsers = await User.find({});
+    // Create the new user with userFriends = all existing users
+    user = await User.create({
+      id,
+      username,
+      userFriends: existingUsers.map(u => ({ userId: u._id, status: 'view' }))
+    });
+    // Add the new user to all existing users' userFriends
+    await Promise.all(existingUsers.map(async (u) => {
+      // Only add if not already present
+      if (!u.userFriends.some((f: any) => String(f.userId) === String(user._id))) {
+        u.userFriends.push({ userId: user._id, status: 'view' });
+        await u.save();
+      }
+    }));
   }
   return res.json(user);
 };

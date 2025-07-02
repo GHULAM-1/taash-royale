@@ -62,7 +62,7 @@ export default function GameSettings() {
   const [mockUsers, setMockUsers] = useState<User[]>([]);
   const minPlayers = 2;
   const maxPlayers = 6;
-  const maxInvites = 2;
+  const maxInvites = 1;
   
   const { width: screenWidth, height: screenHeight } = Dimensions.get('window');
   const isSmallScreen = screenWidth < 400;
@@ -78,7 +78,11 @@ export default function GameSettings() {
         if (!res.ok) throw new Error("Failed to fetch users");
         const data = await res.json();
         console.log("Mock users", data);
-        setMockUsers(data || []);
+        const users = data.map((u: any) => ({
+          id: u.id || u._id, // prefer id, fallback to _id
+          username: u.username
+        }));
+        setMockUsers(users);
       } catch (err) {
         console.error('Error fetching mock users:', err instanceof Error ? err.message : 'Unknown error');
         setMockUsers([]);
@@ -95,7 +99,7 @@ export default function GameSettings() {
     if (tableType === 'private') {
       setLoading(true);
       try {
-        const res = await fetch(`${ENV.BASE_URL}/api/rooms`, {
+        const res = await fetch(`${ENV.BASE_URL}/api/games`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ creator: user.id, maxPlayers: players }),
@@ -119,13 +123,23 @@ export default function GameSettings() {
     if (!roomCode) return;
     setLoading(true);
     try {
-      const res = await fetch(`${ENV.BASE_URL}/api/rooms/invite`, {
+      console.log("Inviting user:", invitee);
+      const res = await fetch(`${ENV.BASE_URL}/api/games/invite`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ code: roomCode, invitees: [invitee] }),
+        body: JSON.stringify({ code: roomCode, invitees: [{ id: invitee.id, username: invitee.username }] }),
       });
       if (!res.ok) throw new Error("Failed to invite user");
-      setInvited((prev) => [...prev, invitee]);
+      setInvited((prev) => {
+        const updated = [...prev, invitee];
+        if (updated.length === maxInvites) {
+          setShowInviteModal(false);
+          setWaiting(true);
+          // Move owner to private-table immediately
+          router.push({ pathname: '/(lobby)/private-table', params: { roomCode } });
+        }
+        return updated;
+      });
     } catch (err) {
       Alert.alert("Invite Error", err instanceof Error ? err.message : "Unknown error");
     } finally {
@@ -139,11 +153,11 @@ export default function GameSettings() {
     let interval: any;
     async function pollRoom() {
       try {
-        const res = await fetch(`${ENV.BASE_URL}/api/rooms/${roomCode}`);
+        const res = await fetch(`${ENV.BASE_URL}/api/games/${roomCode}`);
         if (!res.ok) return;
         const data = await res.json();
-        setRoomStatus(data.room.status);
-        if (data.room.status === 'ready') {
+        setRoomStatus(data.game.gameInfo.status);
+        if (data.game.gameInfo.status === 'ready') {
           setWaiting(false);
           router.push({ pathname: '/(lobby)/private-table', params: { roomCode } });
         }
@@ -154,7 +168,7 @@ export default function GameSettings() {
     return () => clearInterval(interval);
   }, [roomCode, waiting]);
 
-  // After inviting 2 users, start waiting
+  // After inviting 1 user, start waiting
   React.useEffect(() => {
     if (invited.length === maxInvites && roomCode) {
       setShowInviteModal(false);

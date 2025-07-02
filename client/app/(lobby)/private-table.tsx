@@ -31,12 +31,12 @@ export default function PrivateTable() {
       console.log("Fetching room", roomCode);
       if (first) setLoading(true);
       try {
-        const res = await fetch(`${API_URL}/api/rooms/${roomCode}`);
+        const res = await fetch(`${API_URL}/api/games/${roomCode}`);
         if (!res.ok) throw new Error("Room not found");
         const data = await res.json();
         console.log("Room data", data);
-        setRoom(data.room);
-        setUsers(data.room.users || []);
+        setRoom(data.game.gameInfo);
+        setUsers(data.game.gameInfo.users || []);
       } catch (err) {
         console.log("Fetch error", err);
         setRoom(null);

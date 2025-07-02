@@ -1,5 +1,5 @@
 import { Request, Response } from 'express';
-import Room from '../models/Room';
+import Game from '../models/Game';
 import User from '../models/User';
 import { connectDB } from '../utils/db';
 import { StreamChat } from 'stream-chat';
@@ -34,29 +34,37 @@ export const createRoom = async (req: any, res: any) => {
   });
   await channel.create();
 
-  // Store in MongoDB
-  const room = await Room.create({ code, creator, maxPlayers, users: [creatorObj] });
-  return res.json({ code, room });
+  // Store in MongoDB (as gameInfo)
+  const gameInfo = {
+    code,
+    creator,
+    maxPlayers,
+    users: [creatorObj],
+    pendingInvites: [],
+    status: 'waiting_for_invites',
+  };
+  const game = await Game.create({ gameInfo });
+  return res.json({ code, game });
 };
 
 export const joinRoom = async (req: any, res: any) => {
   const { code, userId } = req.body;
   if (!code || !userId) return res.status(400).json({ error: 'code and userId required' });
   await connectDB();
-  const room = await Room.findOne({ code });
-  if (!room) return res.status(404).json({ error: 'Room not found' });
+  const game = await Game.findOne({ 'gameInfo.code': code });
+  if (!game) return res.status(404).json({ error: 'Room not found' });
   // Fetch joining user username
   const joinUser = await User.findOne({ id: userId });
   const joinObj = joinUser ? { id: joinUser.id, username: joinUser.username } : { id: userId, username: userId };
-  // Add user to room if not already
-  if (!room.users.some((u: any) => (u.id || u) === userId)) {
-    room.users.push(joinObj);
-    await room.save();
+  // Add user to gameInfo.users if not already
+  if (!game.gameInfo.users.some((u: any) => (u.id || u) === userId)) {
+    game.gameInfo.users.push(joinObj);
+    await game.save();
   }
   // Add user to Stream channel
   try {
     await serverClient.upsertUser({ id: userId, name: userId });
-    const channel = serverClient.channel('messaging', code, { created_by_id: room.creator });
+    const channel = serverClient.channel('messaging', code, { created_by_id: game.gameInfo.creator });
     await channel.create().catch((err) => {
       if (err.response?.data?.code !== 16) throw err;
     });
@@ -66,57 +74,64 @@ export const joinRoom = async (req: any, res: any) => {
   } catch (err) {
     return res.status(500).json({ error: 'Failed to add user to Stream channel' });
   }
-  return res.json({ room });
+  return res.json({ game });
 };
 
 export const getRoom = async (req: any, res: any) => {
   const { code } = req.params;
   if (!code) return res.status(400).json({ error: 'Room code required' });
   await connectDB();
-  const room = await Room.findOne({ code });
-  if (!room) return res.status(404).json({ error: 'Room not found' });
-  return res.json({ room });
+  const game = await Game.findOne({ 'gameInfo.code': code });
+  if (!game) return res.status(404).json({ error: 'Room not found' });
+  return res.json({ game });
 };
 
 export const inviteToRoom = async (req: any, res: any) => {
   const { code, invitees } = req.body;
   if (!code || !invitees || !Array.isArray(invitees)) return res.status(400).json({ error: 'code and invitees required' });
   await connectDB();
-  const room = await Room.findOne({ code });
-  if (!room) return res.status(404).json({ error: 'Room not found' });
-  // Add invitees to pendingInvites if not already present
+  const game = await Game.findOne({ 'gameInfo.code': code });
+  if (!game) return res.status(404).json({ error: 'Room not found' });
+
+  if (!Array.isArray(game.gameInfo.pendingInvites)) {
+    game.gameInfo.pendingInvites = [];
+  }
+
   invitees.forEach(inv => {
-    if (!room.pendingInvites.some((u: any) => u.id === inv.id)) {
-      room.pendingInvites.push(inv);
+    if (!inv.id && inv._id) inv.id = inv._id;
+    if (!game.gameInfo.pendingInvites.some((u: any) => u.id === inv.id)) {
+      game.gameInfo.pendingInvites.push({ id: inv.id, username: inv.username });
     }
   });
-  await room.save();
-  // TODO: Emit real-time notification here
-  return res.json({ room });
+
+  game.markModified('gameInfo.pendingInvites');
+
+  await game.save();
+  return res.json({ game });
 };
 
 export const acceptInvite = async (req: any, res: any) => {
   const { code, userId } = req.body;
   if (!code || !userId) return res.status(400).json({ error: 'code and userId required' });
   await connectDB();
-  const room = await Room.findOne({ code });
-  if (!room) return res.status(404).json({ error: 'Room not found' });
+  const game = await Game.findOne({ 'gameInfo.code': code });
+  if (!game) return res.status(404).json({ error: 'Room not found' });
   // Find invitee in pendingInvites
-  const idx = room.pendingInvites.findIndex((u: any) => u.id === userId);
+  const idx = game.gameInfo.pendingInvites.findIndex((u: any) => u.id === userId);
   if (idx === -1) return res.status(400).json({ error: 'No pending invite for this user' });
-  const invitee = room.pendingInvites[idx];
+  const invitee = game.gameInfo.pendingInvites[idx];
   // Move invitee to users
-  if (!room.users.some((u: any) => u.id === userId)) {
-    room.users.push(invitee);
+  if (!game.gameInfo.users.some((u: any) => u.id === userId)) {
+    game.gameInfo.users.push(invitee);
   }
-  room.pendingInvites.splice(idx, 1);
+  game.gameInfo.pendingInvites.splice(idx, 1);
   // If all invites accepted, set status to 'ready'
-  if (room.pendingInvites.length === 0) {
-    room.status = 'ready';
+  if (game.gameInfo.pendingInvites.length === 0) {
+    game.gameInfo.status = 'ready';
   }
-  await room.save();
+  await game.save();
   // TODO: Emit real-time notification here
-  return res.json({ room });
+  return res.json({ game });
 };
 
 export const getPendingInvites = async (req: any, res: any) => {
@@ -125,15 +140,14 @@ export const getPendingInvites = async (req: any, res: any) => {
   await connectDB();
   
   try {
-    const rooms = await Room.find({
-      'pendingInvites.id': userId
-    }).select('code creator maxPlayers pendingInvites');
-    
-    const pendingInvites = rooms.map(room => ({
-      roomCode: room.code,
-      creator: room.creator,
-      maxPlayers: room.maxPlayers,
-      invite: room.pendingInvites.find((u: any) => u.id === userId)
+    const games = await Game.find({
+      'gameInfo.pendingInvites.id': userId
+    }).select('gameInfo.code gameInfo.creator gameInfo.maxPlayers gameInfo.pendingInvites');
+    const pendingInvites = games.map(game => ({
+      roomCode: game.gameInfo.code,
+      creator: game.gameInfo.creator,
+      maxPlayers: game.gameInfo.maxPlayers,
+      invite: game.gameInfo.pendingInvites.find((u: any) => u.id === userId)
     }));
     
     return res.json({ pendingInvites });
@@ -141,4 +155,5 @@ export const getPendingInvites = async (req: any, res: any) => {
     console.error('Error fetching pending invites:', error);
     return res.status(500).json({ error: 'Failed to fetch pending invites' });
   }
-}; 
+};
+

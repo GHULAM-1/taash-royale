@@ -84,7 +84,7 @@ export default function PlayWithFriendsCard() {
     
     const pollInvites = async () => {
       try {
-        const res = await fetch(`${ENV.BASE_URL}/api/rooms/pending-invites/${user.id}`);
+        const res = await fetch(`${ENV.BASE_URL}/api/games/pending-invites/${user.id}`);
         if (!res.ok) return;
         const data = await res.json();
         if (data.pendingInvites && data.pendingInvites.length > 0) {
@@ -127,7 +127,7 @@ export default function PlayWithFriendsCard() {
     if (!currentInvite || !user) return;
     
     try {
-      const res = await fetch(`${ENV.BASE_URL}/api/rooms/accept-invite`, {
+      const res = await fetch(`${ENV.BASE_URL}/api/games/accept-invite`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ code: currentInvite.roomCode, userId: user.id }),
